@@ -26,9 +26,8 @@ constexpr float TEMP_REPORT_DELTA = 0.2f;
 constexpr float HUM_REPORT_DELTA = 0.5f;
 constexpr float CO2_REPORT_DELTA = 25.0f;
 
-// ── ENS160 Register Map (ScioSense, I2C 0x53 or 0x52) ────────
-constexpr uint8_t ENS160_ADDR_PRIMARY = 0x53;
-constexpr uint8_t ENS160_ADDR_SECONDARY = 0x52;
+// ── ENS160 Register Map (ScioSense, I2C 0x53) ────────────────
+constexpr uint8_t ENS160_ADDR = 0x53;
 constexpr uint8_t ENS160_REG_PART_ID = 0x00;
 constexpr uint8_t ENS160_REG_OPMODE = 0x10;
 constexpr uint8_t ENS160_REG_TEMP_IN = 0x13;
@@ -44,15 +43,14 @@ AHT20 aht;
 ZigbeeClimateCO2Sensor sensor(10);
 
 // ── Sensor State ─────────────────────────────────────────────
-static uint8_t ens160Addr = 0;
 static bool ens160Ready = false;
 static uint32_t lastEns160Read = 0;
 static uint16_t co2Value = 0;
 static bool co2Valid = false;
 static uint8_t ens160Validity = 3;
 
-static float temperature = 0.0f;
-static float humidity = 0.0f;
+static float temperature = NAN;
+static float humidity = NAN;
 static bool ahtReady = false;
 static bool ahtValid = false;
 static uint32_t lastAhtSample = 0;
@@ -74,25 +72,27 @@ const char *ens160ValidityLabel(uint8_t validity) {
       return "WarmUp";
     case 2:
       return "InitialStartUp";
-    default:
+    case 3:
       return "Invalid";
+    default:
+      return "Unknown";
   }
 }
 
-bool ens160_write_reg8(uint8_t addr, uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(addr);
+bool ens160_write_reg8(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(ENS160_ADDR);
   Wire.write(reg);
   Wire.write(val);
   return Wire.endTransmission() == 0;
 }
 
-bool ens160_read_reg8(uint8_t addr, uint8_t reg, uint8_t &val) {
-  Wire.beginTransmission(addr);
+bool ens160_read_reg8(uint8_t reg, uint8_t &val) {
+  Wire.beginTransmission(ENS160_ADDR);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
-  if (Wire.requestFrom(addr, (uint8_t)1) < 1) {
+  if (Wire.requestFrom(ENS160_ADDR, (uint8_t)1) < 1) {
     return false;
   }
   val = (uint8_t)Wire.read();
@@ -105,7 +105,7 @@ bool ens160_feed_env_data(float tempC, float rhPercent) {
   }
   uint16_t temp_raw = (uint16_t)((tempC + 273.15f) * 64.0f);
   uint16_t rh_raw = (uint16_t)(rhPercent * 512.0f);
-  Wire.beginTransmission(ens160Addr);
+  Wire.beginTransmission(ENS160_ADDR);
   Wire.write(ENS160_REG_TEMP_IN);
   Wire.write(temp_raw & 0xFF);
   Wire.write((temp_raw >> 8) & 0xFF);
@@ -119,7 +119,7 @@ bool ens160_read_co2(uint16_t &co2) {
     return false;
   }
   uint8_t status = 0;
-  if (!ens160_read_reg8(ens160Addr, ENS160_REG_DEVICE_STATUS, status)) {
+  if (!ens160_read_reg8(ENS160_REG_DEVICE_STATUS, status)) {
     return false;
   }
   ens160Validity = (status >> 2) & 0x03;
@@ -129,12 +129,12 @@ bool ens160_read_co2(uint16_t &co2) {
     return false;
   }
 
-  Wire.beginTransmission(ens160Addr);
+  Wire.beginTransmission(ENS160_ADDR);
   Wire.write(ENS160_REG_DATA_ECO2);
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
-  if (Wire.requestFrom(ens160Addr, (uint8_t)2) < 2) {
+  if (Wire.requestFrom(ENS160_ADDR, (uint8_t)2) < 2) {
     return false;
   }
   uint8_t lo = (uint8_t)Wire.read();
@@ -143,50 +143,42 @@ bool ens160_read_co2(uint16_t &co2) {
   return true;
 }
 
-bool ens160_init_at(uint8_t addr) {
-  if (!ens160_write_reg8(addr, ENS160_REG_OPMODE, ENS160_OPMODE_RESET)) {
-    return false;
-  }
-  delay(50);
-
-  Wire.beginTransmission(addr);
-  Wire.write(ENS160_REG_PART_ID);
-  if (Wire.endTransmission(false) != 0) {
-    return false;
-  }
-  if (Wire.requestFrom(addr, (uint8_t)2) < 2) {
-    return false;
-  }
-  uint8_t lo = (uint8_t)Wire.read();
-  uint8_t hi = (uint8_t)Wire.read();
-  uint16_t part_id = (uint16_t)lo | ((uint16_t)hi << 8);
-  if (part_id != ENS160_PART_ID) {
-    Serial.printf("ENS160 at 0x%02X Part ID mismatch: 0x%04X\n", addr, part_id);
-    return false;
-  }
-
-  if (!ens160_write_reg8(addr, ENS160_REG_OPMODE, ENS160_OPMODE_STD)) {
-    return false;
-  }
-  delay(50);
-  ens160Addr = addr;
-  ens160Ready = true;
-  Serial.printf("ENS160 initialized at 0x%02X (Standard Mode)\n", addr);
-  return true;
-}
-
-bool ens160_detect_and_init() {
-  const uint8_t candidates[2] = {ENS160_ADDR_PRIMARY, ENS160_ADDR_SECONDARY};
+bool ens160_init() {
   for (int attempt = 0; attempt < 5; attempt++) {
-    for (uint8_t addr : candidates) {
-      Wire.beginTransmission(addr);
-      if (Wire.endTransmission() == 0 && ens160_init_at(addr)) {
-        return true;
+    Wire.beginTransmission(ENS160_ADDR);
+    if (Wire.endTransmission() == 0) {
+      if (!ens160_write_reg8(ENS160_REG_OPMODE, ENS160_OPMODE_RESET)) {
+        return false;
       }
+      delay(50);
+
+      Wire.beginTransmission(ENS160_ADDR);
+      Wire.write(ENS160_REG_PART_ID);
+      if (Wire.endTransmission(false) != 0) {
+        return false;
+      }
+      if (Wire.requestFrom(ENS160_ADDR, (uint8_t)2) < 2) {
+        return false;
+      }
+      uint8_t lo = (uint8_t)Wire.read();
+      uint8_t hi = (uint8_t)Wire.read();
+      uint16_t part_id = (uint16_t)lo | ((uint16_t)hi << 8);
+      if (part_id != ENS160_PART_ID) {
+        Serial.printf("ENS160 at 0x%02X Part ID mismatch: 0x%04X\n", ENS160_ADDR, part_id);
+        return false;
+      }
+
+      if (!ens160_write_reg8(ENS160_REG_OPMODE, ENS160_OPMODE_STD)) {
+        return false;
+      }
+      delay(50);
+      ens160Ready = true;
+      Serial.printf("ENS160 initialized at 0x%02X (Standard Mode)\n", ENS160_ADDR);
+      return true;
     }
     delay(300);
   }
-  Serial.println("ENS160 not found at 0x53 or 0x52");
+  Serial.printf("ENS160 not found at 0x%02X\n", ENS160_ADDR);
   return false;
 }
 
@@ -239,14 +231,13 @@ void setup() {
   ahtReady = aht.begin();
   Serial.println(ahtReady ? "AHT21 initialized" : "AHT21 init failed");
 
-  ens160_detect_and_init();
+  ens160_init();
 
   sensor.setManufacturerAndModel("DIY", "ESP32C6-Climate-CO2");
   sensor.setPowerSource(ZB_POWER_SOURCE_MAINS);
   sensor.setMinMaxValue(-10.0f, 60.0f);
-  sensor.setDefaultValue(24.0f);
   sensor.setTolerance(0.1f);
-  sensor.addHumiditySensor(0.0f, 100.0f, 0.1f, 50.0f);
+  sensor.addHumiditySensor(0.0f, 100.0f, 0.1f);
   sensor.addCarbonDioxideSensor(0.0f, 65000.0f, 0.0f);
 
   if (!Zigbee.addEndpoint(&sensor)) {
@@ -350,16 +341,26 @@ void loop() {
       }
     }
 
+    char tempBuf[16];
+    char humBuf[16];
+    if (ahtValid) {
+      snprintf(tempBuf, sizeof(tempBuf), "%.1f C", temperature);
+      snprintf(humBuf, sizeof(humBuf), "%.1f%%", humidity);
+    } else {
+      snprintf(tempBuf, sizeof(tempBuf), "N/A");
+      snprintf(humBuf, sizeof(humBuf), "N/A");
+    }
+
     if (!ens160Ready) {
-      Serial.printf("[ZB:%s] T:%.1f C  H:%.1f%%  CO2:N/A(ens160=off)\n",
-                    connected ? "OK" : "WAIT", temperature, humidity);
+      Serial.printf("[ZB:%s] T:%s  H:%s  CO2:N/A(ens160=off)\n",
+                    connected ? "OK" : "WAIT", tempBuf, humBuf);
     } else if (co2Valid) {
-      Serial.printf("[ZB:%s] T:%.1f C  H:%.1f%%  CO2:%u ppm (validity=%u:%s)\n",
-                    connected ? "OK" : "WAIT", temperature, humidity,
+      Serial.printf("[ZB:%s] T:%s  H:%s  CO2:%u ppm (validity=%u:%s)\n",
+                    connected ? "OK" : "WAIT", tempBuf, humBuf,
                     co2Value, ens160Validity, ens160ValidityLabel(ens160Validity));
     } else {
-      Serial.printf("[ZB:%s] T:%.1f C  H:%.1f%%  CO2:warming(raw=%u, validity=%u:%s)\n",
-                    connected ? "OK" : "WAIT", temperature, humidity,
+      Serial.printf("[ZB:%s] T:%s  H:%s  CO2:warming(raw=%u, validity=%u:%s)\n",
+                    connected ? "OK" : "WAIT", tempBuf, humBuf,
                     co2Value, ens160Validity, ens160ValidityLabel(ens160Validity));
     }
   }
