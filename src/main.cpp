@@ -7,6 +7,9 @@
 #include "Zigbee.h"
 #include <AHT20.h>
 
+// AHT21 (I2C 0x38)
+AHT20 aht;
+
 // ─────────────────────────────────────────────────────────────
 // ENS160 CO2 sensor (ScioSense, I2C 0x53)
 // Register map:
@@ -43,7 +46,7 @@ constexpr uint32_t AHT_SAMPLE_INTERVAL_MS = 5000;
 constexpr uint32_t ENS160_READ_INTERVAL_MS = 1000;
 
 ZigbeeTempSensor climateSensor(10);
-ZigbeeCarbonDioxideSensor carbonDioxideSensor(11);
+ZigbeeCarbonDioxideSensor carbonDioxideSensor(11); // CO2 via ZTOOM custom converter
 
 // ENS160 state
 static uint32_t lastEns160Read = 0;
@@ -172,6 +175,8 @@ void setup() {
     Serial.println("Failed to register Zigbee sensor endpoints");
     ESP.restart();
   }
+
+  Zigbee.setRxOnWhenIdle(true); // Keep device awake so ZTOOM can interview it
 
   if (!Zigbee.begin()) {
     Serial.println("Failed to start Zigbee");
