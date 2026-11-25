@@ -82,27 +82,6 @@ public:
     return reportClusterAttribute(&report_attr_cmd);
   }
 
-  bool setCarbonDioxideReporting(uint16_t min_interval, uint16_t max_interval, uint16_t delta_ppm) {
-    if (!_co2_sensor) {
-      return false;
-    }
-    esp_zb_zcl_reporting_info_t reporting_info = {};
-    reporting_info.direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_SRV;
-    reporting_info.ep = _endpoint;
-    reporting_info.cluster_id = ESP_ZB_ZCL_CLUSTER_ID_CARBON_DIOXIDE_MEASUREMENT;
-    reporting_info.cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE;
-    reporting_info.attr_id = ESP_ZB_ZCL_ATTR_CARBON_DIOXIDE_MEASUREMENT_MEASURED_VALUE_ID;
-    reporting_info.u.send_info.min_interval = min_interval;
-    reporting_info.u.send_info.max_interval = max_interval;
-    reporting_info.u.send_info.def_min_interval = min_interval;
-    reporting_info.u.send_info.def_max_interval = max_interval;
-    reporting_info.dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID;
-    reporting_info.manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC;
-    float delta_f = delta_ppm / 1000000.0f;
-    memcpy(&reporting_info.u.send_info.delta.s32, &delta_f, sizeof(float));
-    return setClusterReporting(&reporting_info);
-  }
-
 private:
   bool _co2_sensor;
 };
